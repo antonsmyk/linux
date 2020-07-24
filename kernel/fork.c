@@ -472,6 +472,8 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 	struct rb_node **rb_link, *rb_parent;
 	int retval;
 	unsigned long charge;
+	MA_STATE(old_mas, &oldmm->mm_mt, 0, 0);
+	MA_STATE(mas, &mm->mm_mt, 0, 0);
 	LIST_HEAD(uf);
 
 	uprobe_start_dup_mmap();
@@ -505,8 +507,16 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 		goto out;
 
 	prev = NULL;
-	for (mpnt = oldmm->mmap; mpnt; mpnt = mpnt->vm_next) {
+
+	rcu_read_lock();
+	mas_dup_tree(&old_mas, &mas);
+	mas_reset(&old_mas);
+
+	mas_for_each(&old_mas, mpnt, ULONG_MAX) {
 		struct file *file;
+
+		if (xa_is_zero(mpnt))
+			continue;
 
 		if (mpnt->vm_flags & VM_DONTCOPY) {
 			vm_stat_account(mm, mpnt->vm_flags, -vma_pages(mpnt));
@@ -603,6 +613,7 @@ static __latent_entropy int dup_mmap(struct mm_struct *mm,
 	/* a new mm has just been created */
 	retval = arch_dup_mmap(oldmm, mm);
 out:
+	rcu_read_unlock();
 	mmap_write_unlock(mm);
 	flush_tlb_mm(oldmm);
 	mmap_write_unlock(oldmm);
@@ -1087,6 +1098,7 @@ static inline void __mmput(struct mm_struct *mm)
 	}
 	if (mm->binfmt)
 		module_put(mm->binfmt->module);
+	mt_clear_in_rcu(&mm->mm_mt);
 	mmdrop(mm);
 }
 

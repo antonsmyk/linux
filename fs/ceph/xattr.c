@@ -44,11 +44,14 @@ static bool ceph_is_valid_xattr(const char *name)
 struct ceph_vxattr {
 	char *name;
 	size_t name_size;	/* strlen(name) + 1 (for '\0') */
-	size_t (*getxattr_cb)(struct ceph_inode_info *ci, char *val,
-			      size_t size);
-	bool readonly, hidden;
+	ssize_t (*getxattr_cb)(struct ceph_inode_info *ci, char *val,
+			       size_t size);
 	bool (*exists_cb)(struct ceph_inode_info *ci);
+	unsigned int flags;
 };
+
+#define VXATTR_FLAG_READONLY		(1<<0)
+#define VXATTR_FLAG_HIDDEN		(1<<1)
 
 /* layouts */
 
@@ -60,8 +63,8 @@ static bool ceph_vxattrcb_layout_exists(struct ceph_inode_info *ci)
 		rcu_dereference_raw(fl->pool_ns) != NULL);
 }
 
-static size_t ceph_vxattrcb_layout(struct ceph_inode_info *ci, char *val,
-				   size_t size)
+static ssize_t ceph_vxattrcb_layout(struct ceph_inode_info *ci, char *val,
+				    size_t size)
 {
 	struct ceph_fs_client *fsc = ceph_sb_to_client(ci->vfs_inode.i_sb);
 	struct ceph_osd_client *osdc = &fsc->client->osdc;
@@ -71,7 +74,7 @@ static size_t ceph_vxattrcb_layout(struct ceph_inode_info *ci, char *val,
 	const char *ns_field = " pool_namespace=";
 	char buf[128];
 	size_t len, total_len = 0;
-	int ret;
+	ssize_t ret;
 
 	pool_ns = ceph_try_get_string(ci->i_layout.pool_ns);
 
@@ -88,18 +91,15 @@ static size_t ceph_vxattrcb_layout(struct ceph_inode_info *ci, char *val,
 		len = snprintf(buf, sizeof(buf),
 		"stripe_unit=%u stripe_count=%u object_size=%u pool=%lld",
 		ci->i_layout.stripe_unit, ci->i_layout.stripe_count,
-	        ci->i_layout.object_size, (unsigned long long)pool);
+		ci->i_layout.object_size, pool);
 		total_len = len;
 	}
 
 	if (pool_ns)
 		total_len += strlen(ns_field) + pool_ns->len;
 
-	if (!size) {
-		ret = total_len;
-	} else if (total_len > size) {
-		ret = -ERANGE;
-	} else {
+	ret = total_len;
+	if (size >= total_len) {
 		memcpy(val, buf, len);
 		ret = len;
 		if (pool_name) {
@@ -120,28 +120,55 @@ static size_t ceph_vxattrcb_layout(struct ceph_inode_info *ci, char *val,
 	return ret;
 }
 
-static size_t ceph_vxattrcb_layout_stripe_unit(struct ceph_inode_info *ci,
-					       char *val, size_t size)
-{
-	return snprintf(val, size, "%u", ci->i_layout.stripe_unit);
-}
-
-static size_t ceph_vxattrcb_layout_stripe_count(struct ceph_inode_info *ci,
-						char *val, size_t size)
-{
-	return snprintf(val, size, "%u", ci->i_layout.stripe_count);
-}
-
-static size_t ceph_vxattrcb_layout_object_size(struct ceph_inode_info *ci,
-					       char *val, size_t size)
-{
-	return snprintf(val, size, "%u", ci->i_layout.object_size);
-}
-
-static size_t ceph_vxattrcb_layout_pool(struct ceph_inode_info *ci,
-					char *val, size_t size)
+/*
+ * The convention with strings in xattrs is that they should not be NULL
+ * terminated, since we're returning the length with them. snprintf always
+ * NULL terminates however, so call it on a temporary buffer and then memcpy
+ * the result into place.
+ */
+static int ceph_fmt_xattr(char *val, size_t size, const char *fmt, ...)
 {
 	int ret;
+	va_list args;
+	char buf[96]; /* NB: reevaluate size if new vxattrs are added */
+
+	va_start(args, fmt);
+	ret = vsnprintf(buf, size ? sizeof(buf) : 0, fmt, args);
+	va_end(args);
+
+	/* Sanity check */
+	if (size && ret + 1 > sizeof(buf)) {
+		WARN_ONCE(true, "Returned length too big (%d)", ret);
+		return -E2BIG;
+	}
+
+	if (ret <= size)
+		memcpy(val, buf, ret);
+	return ret;
+}
+
+static ssize_t ceph_vxattrcb_layout_stripe_unit(struct ceph_inode_info *ci,
+						char *val, size_t size)
+{
+	return ceph_fmt_xattr(val, size, "%u", ci->i_layout.stripe_unit);
+}
+
+static ssize_t ceph_vxattrcb_layout_stripe_count(struct ceph_inode_info *ci,
+						 char *val, size_t size)
+{
+	return ceph_fmt_xattr(val, size, "%u", ci->i_layout.stripe_count);
+}
+
+static ssize_t ceph_vxattrcb_layout_object_size(struct ceph_inode_info *ci,
+						char *val, size_t size)
+{
+	return ceph_fmt_xattr(val, size, "%u", ci->i_layout.object_size);
+}
+
+static ssize_t ceph_vxattrcb_layout_pool(struct ceph_inode_info *ci,
+					 char *val, size_t size)
+{
+	ssize_t ret;
 	struct ceph_fs_client *fsc = ceph_sb_to_client(ci->vfs_inode.i_sb);
 	struct ceph_osd_client *osdc = &fsc->client->osdc;
 	s64 pool = ci->i_layout.pool_id;
@@ -149,21 +176,27 @@ static size_t ceph_vxattrcb_layout_pool(struct ceph_inode_info *ci,
 
 	down_read(&osdc->lock);
 	pool_name = ceph_pg_pool_name_by_id(osdc->osdmap, pool);
-	if (pool_name)
-		ret = snprintf(val, size, "%s", pool_name);
-	else
-		ret = snprintf(val, size, "%lld", (unsigned long long)pool);
+	if (pool_name) {
+		ret = strlen(pool_name);
+		if (ret <= size)
+			memcpy(val, pool_name, ret);
+	} else {
+		ret = ceph_fmt_xattr(val, size, "%lld", pool);
+	}
 	up_read(&osdc->lock);
 	return ret;
 }
 
-static size_t ceph_vxattrcb_layout_pool_namespace(struct ceph_inode_info *ci,
-						  char *val, size_t size)
+static ssize_t ceph_vxattrcb_layout_pool_namespace(struct ceph_inode_info *ci,
+						   char *val, size_t size)
 {
-	int ret = 0;
+	ssize_t ret = 0;
 	struct ceph_string *ns = ceph_try_get_string(ci->i_layout.pool_ns);
+
 	if (ns) {
-		ret = snprintf(val, size, "%.*s", (int)ns->len, ns->str);
+		ret = ns->len;
+		if (ret <= size)
+			memcpy(val, ns->str, ret);
 		ceph_put_string(ns);
 	}
 	return ret;
@@ -171,52 +204,53 @@ static size_t ceph_vxattrcb_layout_pool_namespace(struct ceph_inode_info *ci,
 
 /* directories */
 
-static size_t ceph_vxattrcb_dir_entries(struct ceph_inode_info *ci, char *val,
-					size_t size)
-{
-	return snprintf(val, size, "%lld", ci->i_files + ci->i_subdirs);
-}
-
-static size_t ceph_vxattrcb_dir_files(struct ceph_inode_info *ci, char *val,
-				      size_t size)
-{
-	return snprintf(val, size, "%lld", ci->i_files);
-}
-
-static size_t ceph_vxattrcb_dir_subdirs(struct ceph_inode_info *ci, char *val,
-					size_t size)
-{
-	return snprintf(val, size, "%lld", ci->i_subdirs);
-}
-
-static size_t ceph_vxattrcb_dir_rentries(struct ceph_inode_info *ci, char *val,
+static ssize_t ceph_vxattrcb_dir_entries(struct ceph_inode_info *ci, char *val,
 					 size_t size)
 {
-	return snprintf(val, size, "%lld", ci->i_rfiles + ci->i_rsubdirs);
+	return ceph_fmt_xattr(val, size, "%lld", ci->i_files + ci->i_subdirs);
 }
 
-static size_t ceph_vxattrcb_dir_rfiles(struct ceph_inode_info *ci, char *val,
+static ssize_t ceph_vxattrcb_dir_files(struct ceph_inode_info *ci, char *val,
 				       size_t size)
 {
-	return snprintf(val, size, "%lld", ci->i_rfiles);
+	return ceph_fmt_xattr(val, size, "%lld", ci->i_files);
 }
 
-static size_t ceph_vxattrcb_dir_rsubdirs(struct ceph_inode_info *ci, char *val,
+static ssize_t ceph_vxattrcb_dir_subdirs(struct ceph_inode_info *ci, char *val,
 					 size_t size)
 {
-	return snprintf(val, size, "%lld", ci->i_rsubdirs);
+	return ceph_fmt_xattr(val, size, "%lld", ci->i_subdirs);
 }
 
-static size_t ceph_vxattrcb_dir_rbytes(struct ceph_inode_info *ci, char *val,
-				       size_t size)
+static ssize_t ceph_vxattrcb_dir_rentries(struct ceph_inode_info *ci, char *val,
+					  size_t size)
 {
-	return snprintf(val, size, "%lld", ci->i_rbytes);
+	return ceph_fmt_xattr(val, size, "%lld",
+				ci->i_rfiles + ci->i_rsubdirs);
 }
 
-static size_t ceph_vxattrcb_dir_rctime(struct ceph_inode_info *ci, char *val,
-				       size_t size)
+static ssize_t ceph_vxattrcb_dir_rfiles(struct ceph_inode_info *ci, char *val,
+					size_t size)
 {
-	return snprintf(val, size, "%ld.09%ld", (long)ci->i_rctime.tv_sec,
+	return ceph_fmt_xattr(val, size, "%lld", ci->i_rfiles);
+}
+
+static ssize_t ceph_vxattrcb_dir_rsubdirs(struct ceph_inode_info *ci, char *val,
+					  size_t size)
+{
+	return ceph_fmt_xattr(val, size, "%lld", ci->i_rsubdirs);
+}
+
+static ssize_t ceph_vxattrcb_dir_rbytes(struct ceph_inode_info *ci, char *val,
+					size_t size)
+{
+	return ceph_fmt_xattr(val, size, "%lld", ci->i_rbytes);
+}
+
+static ssize_t ceph_vxattrcb_dir_rctime(struct ceph_inode_info *ci, char *val,
+					size_t size)
+{
+	return ceph_fmt_xattr(val, size, "%ld.09%ld", (long)ci->i_rctime.tv_sec,
 			(long)ci->i_rctime.tv_nsec);
 }
 
@@ -235,23 +269,23 @@ static bool ceph_vxattrcb_quota_exists(struct ceph_inode_info *ci)
 	return ret;
 }
 
-static size_t ceph_vxattrcb_quota(struct ceph_inode_info *ci, char *val,
-				  size_t size)
+static ssize_t ceph_vxattrcb_quota(struct ceph_inode_info *ci, char *val,
+				   size_t size)
 {
-	return snprintf(val, size, "max_bytes=%llu max_files=%llu",
-			ci->i_max_bytes, ci->i_max_files);
+	return ceph_fmt_xattr(val, size, "max_bytes=%llu max_files=%llu",
+				ci->i_max_bytes, ci->i_max_files);
 }
 
-static size_t ceph_vxattrcb_quota_max_bytes(struct ceph_inode_info *ci,
-					    char *val, size_t size)
+static ssize_t ceph_vxattrcb_quota_max_bytes(struct ceph_inode_info *ci,
+					     char *val, size_t size)
 {
-	return snprintf(val, size, "%llu", ci->i_max_bytes);
+	return ceph_fmt_xattr(val, size, "%llu", ci->i_max_bytes);
 }
 
-static size_t ceph_vxattrcb_quota_max_files(struct ceph_inode_info *ci,
-					    char *val, size_t size)
+static ssize_t ceph_vxattrcb_quota_max_files(struct ceph_inode_info *ci,
+					     char *val, size_t size)
 {
-	return snprintf(val, size, "%llu", ci->i_max_files);
+	return ceph_fmt_xattr(val, size, "%llu", ci->i_max_files);
 }
 
 #define CEPH_XATTR_NAME(_type, _name)	XATTR_CEPH_PREFIX #_type "." #_name
@@ -263,27 +297,24 @@ static size_t ceph_vxattrcb_quota_max_files(struct ceph_inode_info *ci,
 		.name = CEPH_XATTR_NAME(_type, _name),			\
 		.name_size = sizeof (CEPH_XATTR_NAME(_type, _name)), \
 		.getxattr_cb = ceph_vxattrcb_ ## _type ## _ ## _name, \
-		.readonly = true,				\
-		.hidden = false,				\
-		.exists_cb = NULL,			\
+		.exists_cb = NULL,				\
+		.flags = VXATTR_FLAG_READONLY,			\
 	}
 #define XATTR_LAYOUT_FIELD(_type, _name, _field)			\
 	{								\
 		.name = CEPH_XATTR_NAME2(_type, _name, _field),	\
 		.name_size = sizeof (CEPH_XATTR_NAME2(_type, _name, _field)), \
 		.getxattr_cb = ceph_vxattrcb_ ## _name ## _ ## _field, \
-		.readonly = false,				\
-		.hidden = true,			\
 		.exists_cb = ceph_vxattrcb_layout_exists,	\
+		.flags = VXATTR_FLAG_HIDDEN,			\
 	}
 #define XATTR_QUOTA_FIELD(_type, _name)					\
 	{								\
 		.name = CEPH_XATTR_NAME(_type, _name),			\
 		.name_size = sizeof(CEPH_XATTR_NAME(_type, _name)),	\
 		.getxattr_cb = ceph_vxattrcb_ ## _type ## _ ## _name,	\
-		.readonly = false,					\
-		.hidden = true,						\
 		.exists_cb = ceph_vxattrcb_quota_exists,		\
+		.flags = VXATTR_FLAG_HIDDEN,				\
 	}
 
 static struct ceph_vxattr ceph_dir_vxattrs[] = {
@@ -291,9 +322,8 @@ static struct ceph_vxattr ceph_dir_vxattrs[] = {
 		.name = "ceph.dir.layout",
 		.name_size = sizeof("ceph.dir.layout"),
 		.getxattr_cb = ceph_vxattrcb_layout,
-		.readonly = false,
-		.hidden = true,
 		.exists_cb = ceph_vxattrcb_layout_exists,
+		.flags = VXATTR_FLAG_HIDDEN,
 	},
 	XATTR_LAYOUT_FIELD(dir, layout, stripe_unit),
 	XATTR_LAYOUT_FIELD(dir, layout, stripe_count),
@@ -312,9 +342,8 @@ static struct ceph_vxattr ceph_dir_vxattrs[] = {
 		.name = "ceph.quota",
 		.name_size = sizeof("ceph.quota"),
 		.getxattr_cb = ceph_vxattrcb_quota,
-		.readonly = false,
-		.hidden = true,
 		.exists_cb = ceph_vxattrcb_quota_exists,
+		.flags = VXATTR_FLAG_HIDDEN,
 	},
 	XATTR_QUOTA_FIELD(quota, max_bytes),
 	XATTR_QUOTA_FIELD(quota, max_files),
@@ -329,9 +358,8 @@ static struct ceph_vxattr ceph_file_vxattrs[] = {
 		.name = "ceph.file.layout",
 		.name_size = sizeof("ceph.file.layout"),
 		.getxattr_cb = ceph_vxattrcb_layout,
-		.readonly = false,
-		.hidden = true,
 		.exists_cb = ceph_vxattrcb_layout_exists,
+		.flags = VXATTR_FLAG_HIDDEN,
 	},
 	XATTR_LAYOUT_FIELD(file, layout, stripe_unit),
 	XATTR_LAYOUT_FIELD(file, layout, stripe_count),
@@ -370,9 +398,10 @@ static size_t __init vxattrs_name_size(struct ceph_vxattr *vxattrs)
 	struct ceph_vxattr *vxattr;
 	size_t size = 0;
 
-	for (vxattr = vxattrs; vxattr->name; vxattr++)
-		if (!vxattr->hidden)
+	for (vxattr = vxattrs; vxattr->name; vxattr++) {
+		if (!(vxattr->flags & VXATTR_FLAG_HIDDEN))
 			size += vxattr->name_size;
+	}
 
 	return size;
 }
@@ -813,7 +842,7 @@ ssize_t __ceph_getxattr(struct inode *inode, const char *name, void *value,
 	struct ceph_inode_xattr *xattr;
 	struct ceph_vxattr *vxattr = NULL;
 	int req_mask;
-	int err;
+	ssize_t err;
 
 	if (!ceph_is_valid_xattr(name))
 		return -ENODATA;
@@ -825,8 +854,11 @@ ssize_t __ceph_getxattr(struct inode *inode, const char *name, void *value,
 		if (err)
 			return err;
 		err = -ENODATA;
-		if (!(vxattr->exists_cb && !vxattr->exists_cb(ci)))
+		if (!(vxattr->exists_cb && !vxattr->exists_cb(ci))) {
 			err = vxattr->getxattr_cb(ci, value, size);
+			if (size && size < err)
+				err = -ERANGE;
+		}
 		return err;
 	}
 
@@ -940,7 +972,7 @@ ssize_t ceph_listxattr(struct dentry *dentry, char *names, size_t size)
 	err = namelen;
 	if (vxattrs) {
 		for (i = 0; vxattrs[i].name; i++) {
-			if (!vxattrs[i].hidden &&
+			if (!(vxattrs[i].flags & VXATTR_FLAG_HIDDEN) &&
 			    !(vxattrs[i].exists_cb &&
 			      !vxattrs[i].exists_cb(ci))) {
 				len = sprintf(names, "%s", vxattrs[i].name);
@@ -1050,7 +1082,7 @@ int __ceph_setxattr(struct dentry *dentry, const char *name,
 
 	vxattr = ceph_match_vxattr(inode, name);
 	if (vxattr) {
-		if (vxattr->readonly)
+		if (vxattr->flags & VXATTR_FLAG_READONLY)
 			return -EOPNOTSUPP;
 		if (value && !strncmp(vxattr->name, "ceph.quota", 10))
 			check_realm = true;
@@ -1223,7 +1255,7 @@ int __ceph_removexattr(struct dentry *dentry, const char *name)
 		return -EOPNOTSUPP;
 
 	vxattr = ceph_match_vxattr(inode, name);
-	if (vxattr && vxattr->readonly)
+	if (vxattr && vxattr->flags & VXATTR_FLAG_READONLY)
 		return -EOPNOTSUPP;
 
 	/* pass any unhandled ceph.* xattrs through to the MDS */

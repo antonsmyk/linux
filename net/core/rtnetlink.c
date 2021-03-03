@@ -2044,6 +2044,7 @@ static int do_setlink(const struct sk_buff *skb,
 			goto errout;
 		}
 		if (!netlink_ns_capable(skb, net->user_ns, CAP_NET_ADMIN)) {
+			put_net(net);
 			err = -EPERM;
 			goto errout;
 		}
@@ -3314,6 +3315,9 @@ int ndo_dflt_fdb_dump(struct sk_buff *skb,
 {
 	int err;
 
+	if (dev->type != ARPHRD_ETHER)
+		return -EINVAL;
+
 	netif_addr_lock_bh(dev);
 	err = nlmsg_populate_fdb(skb, cb, dev, idx, &dev->uc);
 	if (err)
@@ -3896,6 +3900,9 @@ static int rtnl_fill_statsinfo(struct sk_buff *skb, struct net_device *dev,
 		return -EMSGSIZE;
 
 	ifsm = nlmsg_data(nlh);
+	ifsm->family = PF_UNSPEC;
+	ifsm->pad1 = 0;
+	ifsm->pad2 = 0;
 	ifsm->ifindex = dev->ifindex;
 	ifsm->filter_mask = filter_mask;
 

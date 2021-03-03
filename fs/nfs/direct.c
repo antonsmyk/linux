@@ -489,7 +489,7 @@ static ssize_t nfs_direct_read_schedule_segment(struct nfs_pageio_descriptor *de
 		result = -ENOMEM;
 		npages = nfs_page_array_len(pgbase, bytes);
 		if (!pagevec)
-			pagevec = kmalloc(npages * sizeof(struct page *),
+			pagevec = kmalloc((npages + 1) * sizeof(struct page *),
 					  GFP_KERNEL);
 		if (!pagevec)
 			break;
@@ -873,7 +873,7 @@ static ssize_t nfs_direct_write_schedule_segment(struct nfs_pageio_descriptor *d
 		result = -ENOMEM;
 		npages = nfs_page_array_len(pgbase, bytes);
 		if (!pagevec)
-			pagevec = kmalloc(npages * sizeof(struct page *), GFP_KERNEL);
+			pagevec = kmalloc((npages + 1) * sizeof(struct page *), GFP_KERNEL);
 		if (!pagevec)
 			break;
 

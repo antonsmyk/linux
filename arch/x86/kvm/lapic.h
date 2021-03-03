@@ -9,8 +9,9 @@
 #define KVM_APIC_SIPI		1
 #define KVM_APIC_LVT_NUM	6
 
-#define KVM_APIC_SHORT_MASK	0xc0000
-#define KVM_APIC_DEST_MASK	0x800
+#define APIC_SHORT_MASK			0xc0000
+#define APIC_DEST_NOSHORT		0x0
+#define APIC_DEST_MASK			0x800
 
 #define APIC_BUS_CYCLE_NS       1
 #define APIC_BUS_FREQUENCY      (1000000000ULL / APIC_BUS_CYCLE_NS)
@@ -217,6 +218,9 @@ static inline bool kvm_lowest_prio_delivery(struct kvm_lapic_irq *irq)
 bool kvm_apic_pending_eoi(struct kvm_vcpu *vcpu, int vector);
 
 void wait_lapic_expire(struct kvm_vcpu *vcpu);
+
+void kvm_bitmap_or_dest_vcpus(struct kvm *kvm, struct kvm_lapic_irq *irq,
+			      unsigned long *vcpu_bitmap);
 
 bool kvm_intr_is_single_vcpu_fast(struct kvm *kvm, struct kvm_lapic_irq *irq,
 			struct kvm_vcpu **dest_vcpu);

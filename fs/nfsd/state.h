@@ -70,6 +70,7 @@ struct nfsd4_callback {
 	int cb_seq_status;
 	int cb_status;
 	bool cb_need_restart;
+	bool cb_holds_slot;
 };
 
 struct nfsd4_callback_ops {
@@ -349,6 +350,7 @@ struct nfs4_client {
 	struct rpc_wait_queue	cl_cb_waitq;	/* backchannel callers may */
 						/* wait here for slots */
 	struct net		*net;
+	atomic_t		cl_cb_inflight;	/* Outstanding callbacks */
 };
 
 /* struct nfs4_client_reset

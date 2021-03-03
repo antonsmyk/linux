@@ -108,10 +108,9 @@ static int mlx5e_route_lookup_ipv6(struct mlx5e_priv *priv,
 #if IS_ENABLED(CONFIG_INET) && IS_ENABLED(CONFIG_IPV6)
 	int ret;
 
-	ret = ipv6_stub->ipv6_dst_lookup(dev_net(mirred_dev), NULL, &dst,
-					 fl6);
-	if (ret < 0)
-		return ret;
+	dst = ipv6_stub->ipv6_dst_lookup_flow(dev_net(mirred_dev), NULL, fl6, NULL);
+	if (IS_ERR(dst))
+		return PTR_ERR(dst);
 
 	if (!(*out_ttl))
 		*out_ttl = ip6_dst_hoplimit(dst);
@@ -302,7 +301,9 @@ int mlx5e_tc_tun_create_header_ipv4(struct mlx5e_priv *priv,
 
 	if (!(nud_state & NUD_VALID)) {
 		neigh_event_send(n, NULL);
-		err = -EAGAIN;
+		/* the encap entry will be made valid on neigh update event
+		 * and not used before that.
+		 */
 		goto out;
 	}
 
@@ -415,7 +416,9 @@ int mlx5e_tc_tun_create_header_ipv6(struct mlx5e_priv *priv,
 
 	if (!(nud_state & NUD_VALID)) {
 		neigh_event_send(n, NULL);
-		err = -EAGAIN;
+		/* the encap entry will be made valid on neigh update event
+		 * and not used before that.
+		 */
 		goto out;
 	}
 

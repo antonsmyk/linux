@@ -78,6 +78,7 @@ extern int qla24xx_async_gnl(struct scsi_qla_host *, fc_port_t *);
 int qla2x00_post_work(struct scsi_qla_host *vha, struct qla_work_evt *e);
 extern void *qla2x00_alloc_iocbs_ready(struct qla_qpair *, srb_t *);
 extern int qla24xx_update_fcport_fcp_prio(scsi_qla_host_t *, fc_port_t *);
+extern int qla24xx_async_abort_cmd(srb_t *, bool);
 
 extern void qla2x00_set_fcport_state(fc_port_t *fcport, int state);
 extern fc_port_t *
@@ -253,6 +254,7 @@ extern char *qla2x00_get_fw_version_str(struct scsi_qla_host *, char *);
 
 extern void qla2x00_mark_device_lost(scsi_qla_host_t *, fc_port_t *, int);
 extern void qla2x00_mark_all_devices_lost(scsi_qla_host_t *);
+extern int qla24xx_async_abort_cmd(srb_t *, bool);
 
 extern struct fw_blob *qla2x00_request_firmware(scsi_qla_host_t *);
 

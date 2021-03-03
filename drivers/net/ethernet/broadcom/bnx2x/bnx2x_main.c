@@ -15273,11 +15273,24 @@ static void bnx2x_ptp_task(struct work_struct *work)
 	u32 val_seq;
 	u64 timestamp, ns;
 	struct skb_shared_hwtstamps shhwtstamps;
+	bool bail = true;
+	int i;
 
-	/* Read Tx timestamp registers */
-	val_seq = REG_RD(bp, port ? NIG_REG_P1_TLLH_PTP_BUF_SEQID :
-			 NIG_REG_P0_TLLH_PTP_BUF_SEQID);
-	if (val_seq & 0x10000) {
+	/* FW may take a while to complete timestamping; try a bit and if it's
+	 * still not complete, may indicate an error state - bail out then.
+	 */
+	for (i = 0; i < 10; i++) {
+		/* Read Tx timestamp registers */
+		val_seq = REG_RD(bp, port ? NIG_REG_P1_TLLH_PTP_BUF_SEQID :
+				 NIG_REG_P0_TLLH_PTP_BUF_SEQID);
+		if (val_seq & 0x10000) {
+			bail = false;
+			break;
+		}
+		msleep(1 << i);
+	}
+
+	if (!bail) {
 		/* There is a valid timestamp value */
 		timestamp = REG_RD(bp, port ? NIG_REG_P1_TLLH_PTP_BUF_TS_MSB :
 				   NIG_REG_P0_TLLH_PTP_BUF_TS_MSB);
@@ -15292,16 +15305,18 @@ static void bnx2x_ptp_task(struct work_struct *work)
 		memset(&shhwtstamps, 0, sizeof(shhwtstamps));
 		shhwtstamps.hwtstamp = ns_to_ktime(ns);
 		skb_tstamp_tx(bp->ptp_tx_skb, &shhwtstamps);
-		dev_kfree_skb_any(bp->ptp_tx_skb);
-		bp->ptp_tx_skb = NULL;
 
 		DP(BNX2X_MSG_PTP, "Tx timestamp, timestamp cycles = %llu, ns = %llu\n",
 		   timestamp, ns);
 	} else {
-		DP(BNX2X_MSG_PTP, "There is no valid Tx timestamp yet\n");
-		/* Reschedule to keep checking for a valid timestamp value */
-		schedule_work(&bp->ptp_task);
+		DP(BNX2X_MSG_PTP,
+		   "Tx timestamp is not recorded (register read=%u)\n",
+		   val_seq);
+		bp->eth_stats.ptp_skip_tx_ts++;
 	}
+
+	dev_kfree_skb_any(bp->ptp_tx_skb);
+	bp->ptp_tx_skb = NULL;
 }
 
 void bnx2x_set_rx_ts(struct bnx2x *bp, struct sk_buff *skb)
@@ -15406,27 +15421,47 @@ static int bnx2x_enable_ptp_packets(struct bnx2x *bp)
 	return 0;
 }
 
+#define BNX2X_P2P_DETECT_PARAM_MASK 0x5F5
+#define BNX2X_P2P_DETECT_RULE_MASK 0x3DBB
+#define BNX2X_PTP_TX_ON_PARAM_MASK (BNX2X_P2P_DETECT_PARAM_MASK & 0x6AA)
+#define BNX2X_PTP_TX_ON_RULE_MASK (BNX2X_P2P_DETECT_RULE_MASK & 0x3EEE)
+#define BNX2X_PTP_V1_L4_PARAM_MASK (BNX2X_P2P_DETECT_PARAM_MASK & 0x7EE)
+#define BNX2X_PTP_V1_L4_RULE_MASK (BNX2X_P2P_DETECT_RULE_MASK & 0x3FFE)
+#define BNX2X_PTP_V2_L4_PARAM_MASK (BNX2X_P2P_DETECT_PARAM_MASK & 0x7EA)
+#define BNX2X_PTP_V2_L4_RULE_MASK (BNX2X_P2P_DETECT_RULE_MASK & 0x3FEE)
+#define BNX2X_PTP_V2_L2_PARAM_MASK (BNX2X_P2P_DETECT_PARAM_MASK & 0x6BF)
+#define BNX2X_PTP_V2_L2_RULE_MASK (BNX2X_P2P_DETECT_RULE_MASK & 0x3EFF)
+#define BNX2X_PTP_V2_PARAM_MASK (BNX2X_P2P_DETECT_PARAM_MASK & 0x6AA)
+#define BNX2X_PTP_V2_RULE_MASK (BNX2X_P2P_DETECT_RULE_MASK & 0x3EEE)
+
 int bnx2x_configure_ptp_filters(struct bnx2x *bp)
 {
 	int port = BP_PORT(bp);
+	u32 param, rule;
 	int rc;
 
 	if (!bp->hwtstamp_ioctl_called)
 		return 0;
 
+	param = port ? NIG_REG_P1_TLLH_PTP_PARAM_MASK :
+		NIG_REG_P0_TLLH_PTP_PARAM_MASK;
+	rule = port ? NIG_REG_P1_TLLH_PTP_RULE_MASK :
+		NIG_REG_P0_TLLH_PTP_RULE_MASK;
 	switch (bp->tx_type) {
 	case HWTSTAMP_TX_ON:
 		bp->flags |= TX_TIMESTAMPING_EN;
-		REG_WR(bp, port ? NIG_REG_P1_TLLH_PTP_PARAM_MASK :
-		       NIG_REG_P0_TLLH_PTP_PARAM_MASK, 0x6AA);
-		REG_WR(bp, port ? NIG_REG_P1_TLLH_PTP_RULE_MASK :
-		       NIG_REG_P0_TLLH_PTP_RULE_MASK, 0x3EEE);
+		REG_WR(bp, param, BNX2X_PTP_TX_ON_PARAM_MASK);
+		REG_WR(bp, rule, BNX2X_PTP_TX_ON_RULE_MASK);
 		break;
 	case HWTSTAMP_TX_ONESTEP_SYNC:
 		BNX2X_ERR("One-step timestamping is not supported\n");
 		return -ERANGE;
 	}
 
+	param = port ? NIG_REG_P1_LLH_PTP_PARAM_MASK :
+		NIG_REG_P0_LLH_PTP_PARAM_MASK;
+	rule = port ? NIG_REG_P1_LLH_PTP_RULE_MASK :
+		NIG_REG_P0_LLH_PTP_RULE_MASK;
 	switch (bp->rx_filter) {
 	case HWTSTAMP_FILTER_NONE:
 		break;
@@ -15440,30 +15475,24 @@ int bnx2x_configure_ptp_filters(struct bnx2x *bp)
 	case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
 		bp->rx_filter = HWTSTAMP_FILTER_PTP_V1_L4_EVENT;
 		/* Initialize PTP detection for UDP/IPv4 events */
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_PARAM_MASK :
-		       NIG_REG_P0_LLH_PTP_PARAM_MASK, 0x7EE);
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_RULE_MASK :
-		       NIG_REG_P0_LLH_PTP_RULE_MASK, 0x3FFE);
+		REG_WR(bp, param, BNX2X_PTP_V1_L4_PARAM_MASK);
+		REG_WR(bp, rule, BNX2X_PTP_V1_L4_RULE_MASK);
 		break;
 	case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
 	case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
 	case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
 		bp->rx_filter = HWTSTAMP_FILTER_PTP_V2_L4_EVENT;
 		/* Initialize PTP detection for UDP/IPv4 or UDP/IPv6 events */
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_PARAM_MASK :
-		       NIG_REG_P0_LLH_PTP_PARAM_MASK, 0x7EA);
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_RULE_MASK :
-		       NIG_REG_P0_LLH_PTP_RULE_MASK, 0x3FEE);
+		REG_WR(bp, param, BNX2X_PTP_V2_L4_PARAM_MASK);
+		REG_WR(bp, rule, BNX2X_PTP_V2_L4_RULE_MASK);
 		break;
 	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
 	case HWTSTAMP_FILTER_PTP_V2_L2_SYNC:
 	case HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ:
 		bp->rx_filter = HWTSTAMP_FILTER_PTP_V2_L2_EVENT;
 		/* Initialize PTP detection L2 events */
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_PARAM_MASK :
-		       NIG_REG_P0_LLH_PTP_PARAM_MASK, 0x6BF);
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_RULE_MASK :
-		       NIG_REG_P0_LLH_PTP_RULE_MASK, 0x3EFF);
+		REG_WR(bp, param, BNX2X_PTP_V2_L2_PARAM_MASK);
+		REG_WR(bp, rule, BNX2X_PTP_V2_L2_RULE_MASK);
 
 		break;
 	case HWTSTAMP_FILTER_PTP_V2_EVENT:
@@ -15471,10 +15500,8 @@ int bnx2x_configure_ptp_filters(struct bnx2x *bp)
 	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
 		bp->rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
 		/* Initialize PTP detection L2, UDP/IPv4 or UDP/IPv6 events */
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_PARAM_MASK :
-		       NIG_REG_P0_LLH_PTP_PARAM_MASK, 0x6AA);
-		REG_WR(bp, port ? NIG_REG_P1_LLH_PTP_RULE_MASK :
-		       NIG_REG_P0_LLH_PTP_RULE_MASK, 0x3EEE);
+		REG_WR(bp, param, BNX2X_PTP_V2_PARAM_MASK);
+		REG_WR(bp, rule, BNX2X_PTP_V2_RULE_MASK);
 		break;
 	}
 

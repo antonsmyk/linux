@@ -988,6 +988,13 @@ __nfs_revalidate_inode(struct nfs_server *server, struct inode *inode)
 	if (NFS_STALE(inode))
 		goto out;
 
+	/* pNFS: Attributes aren't updated until we layoutcommit */
+	if (S_ISREG(inode->i_mode)) {
+		status = pnfs_sync_inode(inode, false);
+		if (status)
+			goto out;
+	}
+
 	status = -ENOMEM;
 	fattr = nfs_alloc_fattr();
 	if (fattr == NULL)
@@ -1485,27 +1492,11 @@ static int nfs_inode_attrs_need_update(const struct inode *inode, const struct n
 		((long)nfsi->attr_gencount - (long)nfs_read_attr_generation_counter() > 0);
 }
 
-/*
- * Don't trust the change_attribute, mtime, ctime or size if
- * a pnfs LAYOUTCOMMIT is outstanding
- */
-static void nfs_inode_attrs_handle_layoutcommit(struct inode *inode,
-		struct nfs_fattr *fattr)
-{
-	if (pnfs_layoutcommit_outstanding(inode))
-		fattr->valid &= ~(NFS_ATTR_FATTR_CHANGE |
-				NFS_ATTR_FATTR_MTIME |
-				NFS_ATTR_FATTR_CTIME |
-				NFS_ATTR_FATTR_SIZE);
-}
-
 static int nfs_refresh_inode_locked(struct inode *inode, struct nfs_fattr *fattr)
 {
 	int ret;
 
 	trace_nfs_refresh_inode_enter(inode);
-
-	nfs_inode_attrs_handle_layoutcommit(inode, fattr);
 
 	if (nfs_inode_attrs_need_update(inode, fattr))
 		ret = nfs_update_inode(inode, fattr);
@@ -1945,7 +1936,6 @@ struct inode *nfs_alloc_inode(struct super_block *sb)
 #if IS_ENABLED(CONFIG_NFS_V4)
 	nfsi->nfs4_acl = NULL;
 #endif /* CONFIG_NFS_V4 */
-	mutex_init(&nfsi->parallel_io_mutex);
 	return &nfsi->vfs_inode;
 }
 EXPORT_SYMBOL_GPL(nfs_alloc_inode);
@@ -1987,7 +1977,6 @@ static void init_once(void *foo)
 	atomic_set(&nfsi->silly_count, 1);
 	INIT_HLIST_HEAD(&nfsi->silly_list);
 	init_waitqueue_head(&nfsi->waitqueue);
-	atomic_set(&nfsi->parallel_io_count, 0);
 	nfs4_init_once(nfsi);
 }
 

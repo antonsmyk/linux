@@ -190,8 +190,6 @@ struct nfs_inode {
 	 * exclusively via direct or buffered IO.  The other mutex in the
 	 * semaphore is i_mutex:
 	 */
-	atomic_t		parallel_io_count;
-	struct mutex	parallel_io_mutex;
 	struct inode		vfs_inode;
 };
 

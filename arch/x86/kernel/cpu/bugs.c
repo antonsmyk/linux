@@ -1217,7 +1217,7 @@ static char *stibp_state(void)
 
 static char *ibpb_state(void)
 {
-	if (boot_cpu_has(X86_FEATURE_USE_IBPB))
+	if (ibpb_enabled())
 		return ", IBPB";
 	else
 		return "";

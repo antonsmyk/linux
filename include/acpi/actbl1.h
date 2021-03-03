@@ -427,7 +427,8 @@ enum acpi_hest_types {
 	ACPI_HEST_TYPE_AER_ENDPOINT = 7,
 	ACPI_HEST_TYPE_AER_BRIDGE = 8,
 	ACPI_HEST_TYPE_GENERIC_ERROR = 9,
-	ACPI_HEST_TYPE_RESERVED = 10	/* 10 and greater are reserved */
+	ACPI_HEST_TYPE_GENERIC_ERROR_V2 = 10,
+	ACPI_HEST_TYPE_RESERVED = 11	/* 11 and greater are reserved */
 };
 
 /*
@@ -506,7 +507,11 @@ enum acpi_hest_notify_types {
 	ACPI_HEST_NOTIFY_NMI = 4,
 	ACPI_HEST_NOTIFY_CMCI = 5,	/* ACPI 5.0 */
 	ACPI_HEST_NOTIFY_MCE = 6,	/* ACPI 5.0 */
-	ACPI_HEST_NOTIFY_RESERVED = 7	/* 7 and greater are reserved */
+	ACPI_HEST_NOTIFY_GPIO = 7,	/* ACPI 6.0 */
+	ACPI_HEST_NOTIFY_SEA = 8,	/* ACPI 6.1 */
+	ACPI_HEST_NOTIFY_SEI = 9,	/* ACPI 6.1 */
+	ACPI_HEST_NOTIFY_GSIV = 10,	/* ACPI 6.1 */
+	ACPI_HEST_NOTIFY_RESERVED = 11	/* 11 and greater are reserved */
 };
 
 /* Values for config_write_enable bitfield above */
@@ -603,9 +608,27 @@ struct acpi_hest_generic {
 	u32 error_block_length;
 };
 
+/* 10: Generic Hardware Error Source, version 2 */
+
+struct acpi_hest_generic_v2 {
+	struct acpi_hest_header header;
+	u16 related_source_id;
+	u8 reserved;
+	u8 enabled;
+	u32 records_to_preallocate;
+	u32 max_sections_per_record;
+	u32 max_raw_data_length;
+	struct acpi_generic_address error_status_address;
+	struct acpi_hest_notify notify;
+	u32 error_block_length;
+	struct acpi_generic_address read_ack_register;
+	u64 read_ack_preserve;
+	u64 read_ack_write;
+};
+
 /* Generic Error Status block */
 
-struct acpi_generic_status {
+struct acpi_hest_generic_status {
 	u32 block_status;
 	u32 raw_data_offset;
 	u32 raw_data_length;
@@ -615,15 +638,15 @@ struct acpi_generic_status {
 
 /* Values for block_status flags above */
 
-#define ACPI_GEN_ERR_UC			BIT(0)
-#define ACPI_GEN_ERR_CE			BIT(1)
-#define ACPI_GEN_ERR_MULTI_UC		BIT(2)
-#define ACPI_GEN_ERR_MULTI_CE		BIT(3)
-#define ACPI_GEN_ERR_COUNT_SHIFT	(0xFF<<4) /* 8 bits, error count */
+#define ACPI_HEST_UNCORRECTABLE             (1)
+#define ACPI_HEST_CORRECTABLE               (1<<1)
+#define ACPI_HEST_MULTIPLE_UNCORRECTABLE    (1<<2)
+#define ACPI_HEST_MULTIPLE_CORRECTABLE      (1<<3)
+#define ACPI_HEST_ERROR_ENTRY_COUNT         (0xFF<<4)	/* 8 bits, error count */
 
 /* Generic Error Data entry */
 
-struct acpi_generic_data {
+struct acpi_hest_generic_data {
 	u8 section_type[16];
 	u32 error_severity;
 	u16 revision;
@@ -633,6 +656,33 @@ struct acpi_generic_data {
 	u8 fru_id[16];
 	u8 fru_text[20];
 };
+
+/* Extension for revision 0x0300 */
+
+struct acpi_hest_generic_data_v300 {
+	u8 section_type[16];
+	u32 error_severity;
+	u16 revision;
+	u8 validation_bits;
+	u8 flags;
+	u32 error_data_length;
+	u8 fru_id[16];
+	u8 fru_text[20];
+	u64 time_stamp;
+};
+
+/* Values for error_severity above */
+
+#define ACPI_HEST_GEN_ERROR_RECOVERABLE     0
+#define ACPI_HEST_GEN_ERROR_FATAL           1
+#define ACPI_HEST_GEN_ERROR_CORRECTED       2
+#define ACPI_HEST_GEN_ERROR_NONE            3
+
+/* Flags for validation_bits above */
+
+#define ACPI_HEST_GEN_VALID_FRU_ID          (1)
+#define ACPI_HEST_GEN_VALID_FRU_STRING      (1<<1)
+#define ACPI_HEST_GEN_VALID_TIMESTAMP       (1<<2)
 
 /*******************************************************************************
  *

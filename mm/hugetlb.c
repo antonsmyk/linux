@@ -879,7 +879,7 @@ static struct page *dequeue_huge_page_node(struct hstate *h, int nid)
 	struct page *page;
 
 	list_for_each_entry(page, &h->hugepage_freelists[nid], lru)
-		if (!is_migrate_isolate_page(page))
+		if (!PageHWPoison(page))
 			break;
 	/*
 	 * if 'non-isolated free hugepage' not found on the list,
@@ -1485,7 +1485,7 @@ static int free_pool_huge_page(struct hstate *h, nodemask_t *nodes_allowed,
  * number of free hugepages would be reduced below the number of reserved
  * hugepages.
  */
-static int dissolve_free_huge_page(struct page *page)
+int dissolve_free_huge_page(struct page *page)
 {
 	int rc = 0;
 
@@ -1497,6 +1497,14 @@ static int dissolve_free_huge_page(struct page *page)
 		if (h->free_huge_pages - h->resv_huge_pages == 0) {
 			rc = -EBUSY;
 			goto out;
+		}
+		/*
+		 * Move PageHWPoison flag from head page to the raw error page,
+		 * which makes any subpages rather than the error page reusable.
+		 */
+		if (PageHWPoison(head) && page != head) {
+			SetPageHWPoison(page);
+			ClearPageHWPoison(head);
 		}
 		list_del(&head->lru);
 		h->free_huge_pages--;

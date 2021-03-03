@@ -136,7 +136,7 @@ xfs_init_local_fork(
 	struct xfs_inode	*ip,
 	int			whichfork,
 	const void		*data,
-	int			size)
+	int64_t			size)
 {
 	struct xfs_ifork	*ifp = XFS_IFORK_PTR(ip, whichfork);
 	int			mem_size = size, real_size = 0;
@@ -163,7 +163,6 @@ xfs_init_local_fork(
 	}
 
 	ifp->if_bytes = size;
-	ifp->if_real_bytes = real_size;
 	ifp->if_flags &= ~(XFS_IFEXTENTS | XFS_IFBROOT);
 	ifp->if_flags |= XFS_IFINLINE;
 }
@@ -231,7 +230,6 @@ xfs_iformat_extents(
 		return -EFSCORRUPTED;
 	}
 
-	ifp->if_real_bytes = 0;
 	ifp->if_bytes = 0;
 	ifp->if_u1.if_root = NULL;
 	ifp->if_height = 0;
@@ -322,7 +320,6 @@ xfs_iformat_btree(
 	ifp->if_flags &= ~XFS_IFEXTENTS;
 	ifp->if_flags |= XFS_IFBROOT;
 
-	ifp->if_real_bytes = 0;
 	ifp->if_bytes = 0;
 	ifp->if_u1.if_root = NULL;
 	ifp->if_height = 0;
@@ -476,55 +473,34 @@ xfs_iroot_realloc(
  */
 void
 xfs_idata_realloc(
-	xfs_inode_t	*ip,
-	int		byte_diff,
-	int		whichfork)
+	struct xfs_inode	*ip,
+	int64_t			byte_diff,
+	int			whichfork)
 {
-	xfs_ifork_t	*ifp;
-	int		new_size;
-	int		real_size;
+	struct xfs_ifork	*ifp = XFS_IFORK_PTR(ip, whichfork);
+	int64_t			new_size = ifp->if_bytes + byte_diff;
 
-	if (byte_diff == 0) {
-		return;
-	}
-
-	ifp = XFS_IFORK_PTR(ip, whichfork);
-	new_size = (int)ifp->if_bytes + byte_diff;
 	ASSERT(new_size >= 0);
+	ASSERT(new_size <= XFS_IFORK_SIZE(ip, whichfork));
+
+	if (byte_diff == 0)
+		return;
 
 	if (new_size == 0) {
 		kmem_free(ifp->if_u1.if_data);
 		ifp->if_u1.if_data = NULL;
-		real_size = 0;
-	} else {
-		/*
-		 * Stuck with malloc/realloc.
-		 * For inline data, the underlying buffer must be
-		 * a multiple of 4 bytes in size so that it can be
-		 * logged and stay on word boundaries.  We enforce
-		 * that here.
-		 */
-		real_size = roundup(new_size, 4);
-		if (ifp->if_u1.if_data == NULL) {
-			ASSERT(ifp->if_real_bytes == 0);
-			ifp->if_u1.if_data = kmem_alloc(real_size,
-							KM_SLEEP | KM_NOFS);
-		} else {
-			/*
-			 * Only do the realloc if the underlying size
-			 * is really changing.
-			 */
-			if (ifp->if_real_bytes != real_size) {
-				ifp->if_u1.if_data =
-					kmem_realloc(ifp->if_u1.if_data,
-							real_size,
-							KM_SLEEP | KM_NOFS);
-			}
-		}
+		ifp->if_bytes = 0;
+		return;
 	}
-	ifp->if_real_bytes = real_size;
+
+	/*
+	 * For inline data, the underlying buffer must be a multiple of 4 bytes
+	 * in size so that it can be logged and stay on word boundaries.
+	 * We enforce that here.
+	 */
+	ifp->if_u1.if_data = kmem_realloc(ifp->if_u1.if_data,
+			roundup(new_size, 4), KM_SLEEP | KM_NOFS);
 	ifp->if_bytes = new_size;
-	ASSERT(ifp->if_bytes <= XFS_IFORK_SIZE(ip, whichfork));
 }
 
 void
@@ -548,16 +524,12 @@ xfs_idestroy_fork(
 	 */
 	if (XFS_IFORK_FORMAT(ip, whichfork) == XFS_DINODE_FMT_LOCAL) {
 		if (ifp->if_u1.if_data != NULL) {
-			ASSERT(ifp->if_real_bytes != 0);
 			kmem_free(ifp->if_u1.if_data);
 			ifp->if_u1.if_data = NULL;
-			ifp->if_real_bytes = 0;
 		}
 	} else if ((ifp->if_flags & XFS_IFEXTENTS) && ifp->if_height) {
 		xfs_iext_destroy(ifp);
 	}
-
-	ASSERT(ifp->if_real_bytes == 0);
 
 	if (whichfork == XFS_ATTR_FORK) {
 		kmem_zone_free(xfs_ifork_zone, ip->i_afp);
@@ -584,7 +556,7 @@ xfs_iextents_copy(
 	struct xfs_ifork	*ifp = XFS_IFORK_PTR(ip, whichfork);
 	struct xfs_iext_cursor	icur;
 	struct xfs_bmbt_irec	rec;
-	int			copied = 0;
+	int64_t			copied = 0;
 
 	ASSERT(xfs_isilocked(ip, XFS_ILOCK_EXCL | XFS_ILOCK_SHARED));
 	ASSERT(ifp->if_bytes > 0);

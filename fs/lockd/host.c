@@ -288,12 +288,11 @@ void nlmclnt_release_host(struct nlm_host *host)
 
 	WARN_ON_ONCE(host->h_server);
 
-	if (atomic_dec_and_test(&host->h_count)) {
+	if (atomic_dec_and_mutex_lock(&host->h_count, &nlm_host_mutex)) {
 		WARN_ON_ONCE(!list_empty(&host->h_lockowners));
 		WARN_ON_ONCE(!list_empty(&host->h_granted));
 		WARN_ON_ONCE(!list_empty(&host->h_reclaim));
 
-		mutex_lock(&nlm_host_mutex);
 		nlm_destroy_host_locked(host);
 		mutex_unlock(&nlm_host_mutex);
 	}
@@ -616,9 +615,8 @@ nlm_shutdown_hosts_net(struct net *net)
 
 	/* Then, perform a garbage collection pass */
 	nlm_gc_hosts(net);
-	mutex_unlock(&nlm_host_mutex);
-
 	nlm_complain_hosts(net);
+	mutex_unlock(&nlm_host_mutex);
 }
 
 /*

@@ -283,14 +283,9 @@ enum oom_scan_t oom_scan_process_thread(struct task_struct *task,
 	if (oom_task_origin(task))
 		return OOM_SCAN_SELECT;
 
-	if (task->flags & PF_EXITING && !force_kill) {
-		/*
-		 * If this task is not being ptraced on exit, then wait for it
-		 * to finish before killing some other task unnecessarily.
-		 */
-		if (!(task->group_leader->ptrace & PT_TRACE_EXIT))
-			return OOM_SCAN_ABORT;
-	}
+	if (task_will_free_mem(task) && !force_kill)
+		return OOM_SCAN_ABORT;
+
 	return OOM_SCAN_OK;
 }
 
@@ -419,6 +414,24 @@ void note_oom_kill(void)
 	atomic_inc(&oom_kills);
 }
 
+/*
+ * task->mm can be NULL if the task is the exited group leader.  So to
+ * determine whether the task is using a particular mm, we examine all the
+ * task's threads: if one of those is using this mm then this task was also
+ * using it.
+ */
+static bool process_shares_mm(struct task_struct *p, struct mm_struct *mm)
+{
+	struct task_struct *t;
+
+	for_each_thread(p, t) {
+		struct mm_struct *t_mm = READ_ONCE(t->mm);
+		if (t_mm)
+			return t_mm == mm;
+	}
+	return false;
+}
+
 #define K(x) ((x) << (PAGE_SHIFT-10))
 /*
  * Must be called while holding a reference to p, which will be released upon
@@ -441,11 +454,14 @@ void oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
 	 * If the task is already exiting, don't alarm the sysadmin or kill
 	 * its children or threads, just set TIF_MEMDIE so it can die quickly
 	 */
-	if (p->flags & PF_EXITING) {
+	task_lock(p);
+	if (task_will_free_mem(p)) {
 		set_tsk_thread_flag(p, TIF_MEMDIE);
+		task_unlock(p);
 		put_task_struct(p);
 		return;
 	}
+	task_unlock(p);
 
 	if (__ratelimit(&oom_rs))
 		dump_header(p, gfp_mask, order, memcg, nodemask);
@@ -473,7 +489,7 @@ void oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
 		list_for_each_entry(child, &t->children, sibling) {
 			unsigned int child_points;
 
-			if (child->mm == p->mm)
+			if (process_shares_mm(child, p->mm))
 				continue;
 			/*
 			 * oom_badness() returns 0 if the thread is unkillable
@@ -501,8 +517,16 @@ void oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
 		victim = p;
 	}
 
-	/* mm cannot safely be dereferenced after task_unlock(victim) */
+	/* Get a reference to safely compare mm after task_unlock(victim) */
 	mm = victim->mm;
+	atomic_inc(&mm->mm_count);
+	/*
+	 * We should send SIGKILL before setting TIF_MEMDIE in order to prevent
+	 * the OOM victim from depleting the memory reserves from the user
+	 * space under its control.
+	 */
+	do_send_sig_info(SIGKILL, SEND_SIG_FORCED, victim, true);
+	set_tsk_thread_flag(victim, TIF_MEMDIE);
 	pr_err("Killed process %d (%s), UID %d, total-vm:%lukB, anon-rss:%lukB, file-rss:%lukB, shmem-rss:%lukB\n",
 		task_pid_nr(victim), victim->comm,
 		task_uid(victim).val, K(victim->mm->total_vm),
@@ -521,22 +545,23 @@ void oom_kill_process(struct task_struct *p, gfp_t gfp_mask, int order,
 	 * pending fatal signal.
 	 */
 	rcu_read_lock();
-	for_each_process(p)
-		if (p->mm == mm && !same_thread_group(p, victim) &&
-		    !(p->flags & PF_KTHREAD)) {
-			if (p->signal->oom_score_adj == OOM_SCORE_ADJ_MIN)
-				continue;
+	for_each_process(p) {
+		if (!process_shares_mm(p, mm))
+			continue;
+		if (same_thread_group(p, victim))
+			continue;
+		if (unlikely(p->flags & PF_KTHREAD))
+			continue;
+		if (is_global_init(p))
+			continue;
+		if (p->signal->oom_score_adj == OOM_SCORE_ADJ_MIN)
+			continue;
 
-			task_lock(p);	/* Protect ->comm from prctl() */
-			pr_err("Kill process %d (%s) sharing same memory\n",
-				task_pid_nr(p), p->comm);
-			task_unlock(p);
-			do_send_sig_info(SIGKILL, SEND_SIG_FORCED, p, true);
-		}
+		do_send_sig_info(SIGKILL, SEND_SIG_FORCED, p, true);
+	}
 	rcu_read_unlock();
 
-	set_tsk_thread_flag(victim, TIF_MEMDIE);
-	do_send_sig_info(SIGKILL, SEND_SIG_FORCED, victim, true);
+	mmdrop(mm);
 	put_task_struct(victim);
 }
 #undef K
@@ -660,8 +685,12 @@ void out_of_memory(struct zonelist *zonelist, gfp_t gfp_mask,
 	 * If current has a pending SIGKILL or is exiting, then automatically
 	 * select it.  The goal is to allow it to allocate so that it may
 	 * quickly exit and free its memory.
+	 *
+	 * But don't select if current has already released its mm and cleared
+	 * TIF_MEMDIE flag at exit_mm(), otherwise an OOM livelock may occur.
 	 */
-	if (fatal_signal_pending(current) || current->flags & PF_EXITING) {
+	if (current->mm &&
+	    (fatal_signal_pending(current) || task_will_free_mem(current))) {
 		set_thread_flag(TIF_MEMDIE);
 		return;
 	}

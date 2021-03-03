@@ -878,6 +878,13 @@ static inline void audit_proctitle_free(struct audit_context *context)
 	context->proctitle.len = 0;
 }
 
+static inline void audit_free_module(struct audit_context *context)
+{
+	if (context->type == AUDIT_KERN_MODULE) {
+		kfree(context->module.name);
+		context->module.name = NULL;
+	}
+}
 static inline void audit_free_names(struct audit_context *context)
 {
 	struct audit_names *n, *next;
@@ -961,6 +968,7 @@ int audit_alloc(struct task_struct *tsk)
 
 static inline void audit_free_context(struct audit_context *context)
 {
+	audit_free_module(context);
 	audit_free_names(context);
 	unroll_tree_refs(context, NULL, 0);
 	free_tree_refs(context);
@@ -1276,8 +1284,11 @@ static void show_special(struct audit_context *context, int *call_panic)
 		break;
 	case AUDIT_KERN_MODULE:
 		audit_log_format(ab, "name=");
-		audit_log_untrustedstring(ab, context->module.name);
-		kfree(context->module.name);
+		if (context->module.name) {
+			audit_log_untrustedstring(ab, context->module.name);
+		} else
+			audit_log_format(ab, "(null)");
+
 		break;
 	}
 	audit_log_end(ab);
@@ -1580,6 +1591,7 @@ void __audit_syscall_exit(int success, long return_code)
 	if (!list_empty(&context->killed_trees))
 		audit_kill_trees(&context->killed_trees);
 
+	audit_free_module(context);
 	audit_free_names(context);
 	unroll_tree_refs(context, NULL, 0);
 	audit_free_aux(context);
@@ -2430,8 +2442,9 @@ void __audit_log_kern_module(char *name)
 {
 	struct audit_context *context = current->audit_context;
 
-	context->module.name = kmalloc(strlen(name) + 1, GFP_KERNEL);
-	strcpy(context->module.name, name);
+	context->module.name = kstrdup(name, GFP_KERNEL);
+	if (!context->module.name)
+		audit_log_lost("out of memory in __audit_log_kern_module");
 	context->type = AUDIT_KERN_MODULE;
 }
 

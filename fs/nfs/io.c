@@ -29,12 +29,7 @@ static void nfs_block_o_direct(struct nfs_inode *nfsi, struct inode *inode)
  * Declare that a buffered read operation is about to start, and ensure
  * that we block all direct I/O.
  * On exit, the function ensures that the NFS_INO_ODIRECT flag is unset,
- * and holds a lock on inode->i_mutex to ensure that the flag
- * cannot be changed.
- * In practice, this means that buffered read operations are allowed to
- * execute in parallel, thanks to not needing to grab the lock if another
- * read is already holding it, whereas direct I/O operations need to wait
- * until buffered read operations complete to set NFS_INO_ODIRECT.
+ * and holds a lock on inode->i_mutex.
  * Note that buffered writes and truncates both take i_mutex, meaning that
  * those are serialised w.r.t. the reads.
  */
@@ -43,32 +38,22 @@ nfs_start_io_read(struct inode *inode)
 {
 	struct nfs_inode *nfsi = NFS_I(inode);
 
-	mutex_lock(&nfsi->parallel_io_mutex);
+	mutex_lock(&inode->i_mutex);
 
-	if (test_bit(NFS_INO_ODIRECT, &nfsi->flags) != 0) {
-		mutex_lock(&inode->i_mutex);
+	if (test_bit(NFS_INO_ODIRECT, &nfsi->flags) != 0)
 		nfs_block_o_direct(nfsi, inode);
-		atomic_inc(&nfsi->parallel_io_count);
-	} else if (atomic_inc_return(&nfsi->parallel_io_count) == 1)
-		mutex_lock(&inode->i_mutex);
-
-	mutex_unlock(&nfsi->parallel_io_mutex);
 }
 
 /**
  * nfs_end_io_read - declare that the buffered read operation is done
  * @inode - file inode
  *
- * Declare that a buffered read operation is done, and release i_mutex if
- * there are no more read operations.
+ * Declare that a buffered read operation is done, and release i_mutex.
  */
 void
 nfs_end_io_read(struct inode *inode)
 {
-	struct nfs_inode *nfsi = NFS_I(inode);
-
-	if (atomic_dec_and_test(&nfsi->parallel_io_count))
-		mutex_unlock(&inode->i_mutex);
+	mutex_unlock(&inode->i_mutex);
 }
 
 /**
@@ -116,12 +101,7 @@ static void nfs_block_buffered(struct nfs_inode *nfsi, struct inode *inode)
  * On exit, the function ensures that the NFS_INO_ODIRECT flag is set,
  * and holds a lock on i_mutex to ensure that the flag cannot be
  * changed.
- * In practice, this means that direct I/O operations are allowed to
- * execute in parallel, since we have already taken the lock on the
- * first operation, whereas buffered I/O operations need to wait for
- * outstanding direct I/O operations to complete in order to clear
- * NFS_INO_ODIRECT.
- * Note that buffered writes and truncates both take a write i_mutex,
+ * Note that buffered writes and truncates both take i_mutex,
  * meaning that those are serialised w.r.t. O_DIRECT.
  */
 void
@@ -129,30 +109,19 @@ nfs_start_io_direct(struct inode *inode)
 {
 	struct nfs_inode *nfsi = NFS_I(inode);
 
-	mutex_lock(&nfsi->parallel_io_mutex);
-
-	if (test_bit(NFS_INO_ODIRECT, &nfsi->flags) == 0) {
-		mutex_lock(&inode->i_mutex);
+	mutex_lock(&inode->i_mutex);
+	if (test_bit(NFS_INO_ODIRECT, &nfsi->flags) == 0)
 		nfs_block_buffered(nfsi, inode);
-		atomic_inc(&nfsi->parallel_io_count);
-	} else if (atomic_inc_return(&nfsi->parallel_io_count) == 1)
-		mutex_lock(&inode->i_mutex);
-
-	mutex_unlock(&nfsi->parallel_io_mutex);
 }
 
 /**
  * nfs_end_io_direct - declare that the direct i/o operation is done
  * @inode - file inode
  *
- * Declare that a direct I/O operation is done, and release the shared
- * lock on inode->i_rwsem.
+ * Declare that a direct I/O operation is done, and release i_mutex
  */
 void
 nfs_end_io_direct(struct inode *inode)
 {
-	struct nfs_inode *nfsi = NFS_I(inode);
-
-	if (atomic_dec_and_test(&nfsi->parallel_io_count))
-		mutex_unlock(&inode->i_mutex);
+	mutex_unlock(&inode->i_mutex);
 }

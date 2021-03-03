@@ -101,12 +101,14 @@ void machine_kexec(struct kimage *image)
 	int save_ftrace_enabled;
 
 	save_ftrace_enabled = __ftrace_enabled_save();
+	this_cpu_disable_ftrace();
 
 	if (ppc_md.machine_kexec)
 		ppc_md.machine_kexec(image);
 	else
 		default_machine_kexec(image);
 
+	this_cpu_enable_ftrace();
 	__ftrace_enabled_restore(save_ftrace_enabled);
 
 	/* Fall back to normal restart if we're still alive. */
@@ -162,11 +164,12 @@ unsigned long long __init arch_default_crash_size(unsigned long long total_size)
 
 void __init reserve_crashkernel(void)
 {
-	unsigned long long crash_size, crash_base;
+	unsigned long long crash_size, crash_base, total_mem_sz;
 	int ret;
 
+	total_mem_sz = memory_limit ? memory_limit : memblock_phys_mem_size();
 	/* use common parsing */
-	ret = parse_crashkernel(boot_command_line, memblock_phys_mem_size(),
+	ret = parse_crashkernel(boot_command_line, total_mem_sz,
 			&crash_size, &crash_base);
 	if (ret == 0 && crash_size > 0) {
 		crashk_res.start = crash_base;
@@ -225,6 +228,7 @@ void __init reserve_crashkernel(void)
 	/* Crash kernel trumps memory limit */
 	if (memory_limit && memory_limit <= crashk_res.end) {
 		memory_limit = crashk_res.end + 1;
+		total_mem_sz = memory_limit;
 		printk("Adjusted memory limit for crashkernel, now 0x%llx\n",
 		       memory_limit);
 	}
@@ -233,7 +237,7 @@ void __init reserve_crashkernel(void)
 			"for crashkernel (System RAM: %ldMB)\n",
 			(unsigned long)(crash_size >> 20),
 			(unsigned long)(crashk_res.start >> 20),
-			(unsigned long)(memblock_phys_mem_size() >> 20));
+			(unsigned long)(total_mem_sz >> 20));
 
 	if (!memblock_is_region_memory(crashk_res.start, crash_size) ||
 	    memblock_reserve(crashk_res.start, crash_size)) {

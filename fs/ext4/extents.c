@@ -3421,8 +3421,8 @@ static int ext4_ext_convert_to_initialized(handle_t *handle,
 		(unsigned long long)map->m_lblk, map_len);
 
 	sbi = EXT4_SB(inode->i_sb);
-	eof_block = (inode->i_size + inode->i_sb->s_blocksize - 1) >>
-		inode->i_sb->s_blocksize_bits;
+	eof_block = (EXT4_I(inode)->i_disksize + inode->i_sb->s_blocksize - 1)
+			>> inode->i_sb->s_blocksize_bits;
 	if (eof_block < map->m_lblk + map_len)
 		eof_block = map->m_lblk + map_len;
 
@@ -3675,8 +3675,8 @@ static int ext4_split_convert_extents(handle_t *handle,
 		  __func__, inode->i_ino,
 		  (unsigned long long)map->m_lblk, map->m_len);
 
-	eof_block = (inode->i_size + inode->i_sb->s_blocksize - 1) >>
-		inode->i_sb->s_blocksize_bits;
+	eof_block = (EXT4_I(inode)->i_disksize + inode->i_sb->s_blocksize - 1)
+			>> inode->i_sb->s_blocksize_bits;
 	if (eof_block < map->m_lblk + map->m_len)
 		eof_block = map->m_lblk + map->m_len;
 	/*
@@ -4500,6 +4500,8 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 		ar.flags |= EXT4_MB_HINT_NOPREALLOC;
 	if (flags & EXT4_GET_BLOCKS_DELALLOC_RESERVE)
 		ar.flags |= EXT4_MB_DELALLOC_RESERVED;
+	if (flags & EXT4_GET_BLOCKS_METADATA_NOFAIL)
+		ar.flags |= EXT4_MB_USE_RESERVED;
 	newblock = ext4_mb_new_blocks(handle, &ar, &err);
 	if (!newblock)
 		goto out2;
@@ -5386,11 +5388,18 @@ ext4_ext_shift_extents(struct inode *inode, handle_t *handle,
 	 * enough to accomodate the shift.
 	 */
 	path = ext4_ext_find_extent(inode, start - 1, NULL, 0);
+	if (IS_ERR(path))
+		return PTR_ERR(path);
 	depth = path->p_depth;
 	extent =  path[depth].p_ext;
-	ex_start = le32_to_cpu(extent->ee_block);
-	ex_end = le32_to_cpu(extent->ee_block) +
+	if (extent) {
+		ex_start = le32_to_cpu(extent->ee_block);
+		ex_end = le32_to_cpu(extent->ee_block) +
 			ext4_ext_get_actual_len(extent);
+	} else {
+		ex_start = 0;
+		ex_end = 0;
+	}
 	ext4_ext_drop_refs(path);
 	kfree(path);
 

@@ -191,7 +191,7 @@ static inline bool megasas_check_same_4gb_region
  * megasas_enable_intr_fusion -	Enables interrupts
  * @regs:			MFI register set
  */
-void
+static void
 megasas_enable_intr_fusion(struct megasas_instance *instance)
 {
 	struct megasas_register_set __iomem *regs;
@@ -213,7 +213,7 @@ megasas_enable_intr_fusion(struct megasas_instance *instance)
  * megasas_disable_intr_fusion - Disables interrupt
  * @regs:			 MFI register set
  */
-void
+static void
 megasas_disable_intr_fusion(struct megasas_instance *instance)
 {
 	u32 mask = 0xFFFFFFFF;
@@ -339,9 +339,6 @@ megasas_fusion_update_can_queue(struct megasas_instance *instance, int fw_boot_c
 {
 	u16 cur_max_fw_cmds = 0;
 	u16 ldio_threshold = 0;
-	struct megasas_register_set __iomem *reg_set;
-
-	reg_set = instance->reg_set;
 
 	/* ventura FW does not fill outbound_scratch_pad_2 with queue depth */
 	if (instance->adapter_type < VENTURA_SERIES)
@@ -553,7 +550,7 @@ static int megasas_create_sg_sense_fusion(struct megasas_instance *instance)
 	return 0;
 }
 
-int
+static int
 megasas_alloc_cmdlist_fusion(struct megasas_instance *instance)
 {
 	u32 max_mpt_cmd, i, j;
@@ -592,7 +589,8 @@ megasas_alloc_cmdlist_fusion(struct megasas_instance *instance)
 
 	return 0;
 }
-int
+
+static int
 megasas_alloc_request_fusion(struct megasas_instance *instance)
 {
 	struct fusion_context *fusion;
@@ -612,7 +610,8 @@ retry_alloc:
 
 	fusion->io_request_frames =
 			dma_pool_alloc(fusion->io_request_frames_pool,
-				GFP_KERNEL, &fusion->io_request_frames_phys);
+				GFP_KERNEL | __GFP_NOWARN,
+				&fusion->io_request_frames_phys);
 	if (!fusion->io_request_frames) {
 		if (instance->max_fw_cmds >= (MEGASAS_REDUCE_QD_COUNT * 2)) {
 			instance->max_fw_cmds -= MEGASAS_REDUCE_QD_COUNT;
@@ -650,7 +649,7 @@ retry_alloc:
 
 		fusion->io_request_frames =
 			dma_pool_alloc(fusion->io_request_frames_pool,
-				       GFP_KERNEL,
+				       GFP_KERNEL | __GFP_NOWARN,
 				       &fusion->io_request_frames_phys);
 
 		if (!fusion->io_request_frames) {
@@ -673,7 +672,7 @@ retry_alloc:
 	return 0;
 }
 
-int
+static int
 megasas_alloc_reply_fusion(struct megasas_instance *instance)
 {
 	int i, count;
@@ -750,7 +749,7 @@ megasas_alloc_reply_fusion(struct megasas_instance *instance)
 	return 0;
 }
 
-int
+static int
 megasas_alloc_rdpq_fusion(struct megasas_instance *instance)
 {
 	int i, j, k, msix_count;
@@ -931,7 +930,7 @@ megasas_free_reply_fusion(struct megasas_instance *instance) {
  * and is used as SMID of the cmd.
  * SMID value range is from 1 to max_fw_cmds.
  */
-int
+static int
 megasas_alloc_cmds_fusion(struct megasas_instance *instance)
 {
 	int i;
@@ -1329,7 +1328,9 @@ megasas_sync_pd_seq_num(struct megasas_instance *instance, bool pend) {
 	}
 
 	if (ret == DCMD_TIMEOUT)
-		megaraid_sas_kill_hba(instance);
+		dev_warn(&instance->pdev->dev,
+			 "%s DCMD timed out, continue without JBOD sequence map\n",
+			 __func__);
 
 	if (ret == DCMD_SUCCESS)
 		instance->pd_seq_map_id++;
@@ -1411,7 +1412,9 @@ megasas_get_ld_map_info(struct megasas_instance *instance)
 		ret = megasas_issue_polled(instance, cmd);
 
 	if (ret == DCMD_TIMEOUT)
-		megaraid_sas_kill_hba(instance);
+		dev_warn(&instance->pdev->dev,
+			 "%s DCMD timed out, RAID map is disabled\n",
+			 __func__);
 
 	megasas_return_cmd(instance, cmd);
 
@@ -1751,7 +1754,7 @@ static inline void megasas_free_ioc_init_cmd(struct megasas_instance *instance)
  *
  * This is the main function for initializing firmware.
  */
-u32
+static u32
 megasas_init_adapter_fusion(struct megasas_instance *instance)
 {
 	struct fusion_context *fusion;
@@ -1977,7 +1980,7 @@ megasas_fusion_stop_watchdog(struct megasas_instance *instance)
  * @ext_status :	ext status of cmd returned by FW
  */
 
-void
+static void
 map_cmd_status(struct fusion_context *fusion,
 		struct scsi_cmnd *scmd, u8 status, u8 ext_status,
 		u32 data_length, u8 *sense)
@@ -2390,7 +2393,7 @@ int megasas_make_sgl(struct megasas_instance *instance, struct scsi_cmnd *scp,
  *
  * Used to set the PD LBA in CDB for FP IOs
  */
-void
+static void
 megasas_set_pd_lba(struct MPI2_RAID_SCSI_IO_REQUEST *io_request, u8 cdb_len,
 		   struct IO_REQUEST_INFO *io_info, struct scsi_cmnd *scp,
 		   struct MR_DRV_RAID_MAP_ALL *local_map_ptr, u32 ref_tag)
@@ -2729,7 +2732,7 @@ megasas_set_raidflag_cpu_affinity(struct fusion_context *fusion,
  * Prepares the io_request and chain elements (sg_frame) for IO
  * The IO can be for PD (Fast Path) or LD
  */
-void
+static void
 megasas_build_ldio_fusion(struct megasas_instance *instance,
 			  struct scsi_cmnd *scp,
 			  struct megasas_cmd_fusion *cmd)
@@ -3226,7 +3229,7 @@ megasas_build_syspd_fusion(struct megasas_instance *instance,
  * Invokes helper functions to prepare request frames
  * and sets flags appropriate for IO/Non-IO cmd
  */
-int
+static int
 megasas_build_io_fusion(struct megasas_instance *instance,
 			struct scsi_cmnd *scp,
 			struct megasas_cmd_fusion *cmd)
@@ -3340,9 +3343,9 @@ megasas_get_request_descriptor(struct megasas_instance *instance, u16 index)
 /* megasas_prepate_secondRaid1_IO
  *  It prepares the raid 1 second IO
  */
-void megasas_prepare_secondRaid1_IO(struct megasas_instance *instance,
-			    struct megasas_cmd_fusion *cmd,
-			    struct megasas_cmd_fusion *r1_cmd)
+static void megasas_prepare_secondRaid1_IO(struct megasas_instance *instance,
+					   struct megasas_cmd_fusion *cmd,
+					   struct megasas_cmd_fusion *r1_cmd)
 {
 	union MEGASAS_REQUEST_DESCRIPTOR_UNION *req_desc, *req_desc2 = NULL;
 	struct fusion_context *fusion;
@@ -3525,7 +3528,7 @@ megasas_complete_r1_command(struct megasas_instance *instance,
  * @instance:			Adapter soft state
  * Completes all commands that is in reply descriptor queue
  */
-int
+static int
 complete_cmd_fusion(struct megasas_instance *instance, u32 MSIxIndex,
 		    struct megasas_irq_context *irq_context)
 {
@@ -3716,7 +3719,7 @@ static void megasas_enable_irq_poll(struct megasas_instance *instance)
  * megasas_sync_irqs -	Synchronizes all IRQs owned by adapter
  * @instance:			Adapter soft state
  */
-void megasas_sync_irqs(unsigned long instance_addr)
+static void megasas_sync_irqs(unsigned long instance_addr)
 {
 	u32 count, i;
 	struct megasas_instance *instance =
@@ -3774,7 +3777,7 @@ int megasas_irqpoll(struct irq_poll *irqpoll, int budget)
  *
  * Tasklet to complete cmds
  */
-void
+static void
 megasas_complete_cmd_dpc_fusion(unsigned long instance_addr)
 {
 	struct megasas_instance *instance =
@@ -3794,7 +3797,7 @@ megasas_complete_cmd_dpc_fusion(unsigned long instance_addr)
 /**
  * megasas_isr_fusion - isr entry point
  */
-irqreturn_t megasas_isr_fusion(int irq, void *devp)
+static irqreturn_t megasas_isr_fusion(int irq, void *devp)
 {
 	struct megasas_irq_context *irq_context = devp;
 	struct megasas_instance *instance = irq_context->instance;
@@ -3830,7 +3833,7 @@ irqreturn_t megasas_isr_fusion(int irq, void *devp)
  * mfi_cmd:			megasas_cmd pointer
  *
  */
-void
+static void
 build_mpt_mfi_pass_thru(struct megasas_instance *instance,
 			struct megasas_cmd *mfi_cmd)
 {
@@ -3888,7 +3891,7 @@ build_mpt_mfi_pass_thru(struct megasas_instance *instance,
  * @cmd:			mfi cmd to build
  *
  */
-union MEGASAS_REQUEST_DESCRIPTOR_UNION *
+static union MEGASAS_REQUEST_DESCRIPTOR_UNION *
 build_mpt_cmd(struct megasas_instance *instance, struct megasas_cmd *cmd)
 {
 	union MEGASAS_REQUEST_DESCRIPTOR_UNION *req_desc = NULL;
@@ -3914,7 +3917,7 @@ build_mpt_cmd(struct megasas_instance *instance, struct megasas_cmd *cmd)
  * @cmd:			mfi cmd pointer
  *
  */
-void
+static void
 megasas_issue_dcmd_fusion(struct megasas_instance *instance,
 			  struct megasas_cmd *cmd)
 {
@@ -4110,8 +4113,9 @@ static inline void megasas_trigger_snap_dump(struct megasas_instance *instance)
 }
 
 /* This function waits for outstanding commands on fusion to complete */
-int megasas_wait_for_outstanding_fusion(struct megasas_instance *instance,
-					int reason, int *convert)
+static int
+megasas_wait_for_outstanding_fusion(struct megasas_instance *instance,
+				    int reason, int *convert)
 {
 	int i, outstanding, retval = 0, hb_seconds_missed = 0;
 	u32 fw_state, abs_state;
@@ -4235,15 +4239,17 @@ void  megasas_reset_reply_desc(struct megasas_instance *instance)
  * megasas_refire_mgmt_cmd :	Re-fire management commands
  * @instance:				Controller's soft instance
 */
-void megasas_refire_mgmt_cmd(struct megasas_instance *instance)
+static void megasas_refire_mgmt_cmd(struct megasas_instance *instance,
+			     bool return_ioctl)
 {
 	int j;
 	struct megasas_cmd_fusion *cmd_fusion;
 	struct fusion_context *fusion;
 	struct megasas_cmd *cmd_mfi;
 	union MEGASAS_REQUEST_DESCRIPTOR_UNION *req_desc;
+	struct MPI2_RAID_SCSI_IO_REQUEST *scsi_io_req;
 	u16 smid;
-	bool refire_cmd = 0;
+	bool refire_cmd = false;
 	u8 result;
 	u32 opcode = 0;
 
@@ -4299,6 +4305,21 @@ void megasas_refire_mgmt_cmd(struct megasas_instance *instance)
 			break;
 		}
 
+		if (return_ioctl && cmd_mfi->sync_cmd &&
+		    cmd_mfi->frame->hdr.cmd != MFI_CMD_ABORT) {
+			dev_err(&instance->pdev->dev,
+				"return -EBUSY from %s %d cmd 0x%x opcode 0x%x\n",
+				__func__, __LINE__, cmd_mfi->frame->hdr.cmd,
+				le32_to_cpu(cmd_mfi->frame->dcmd.opcode));
+			cmd_mfi->cmd_status_drv = DCMD_BUSY;
+			result = COMPLETE_CMD;
+		}
+
+		scsi_io_req = (struct MPI2_RAID_SCSI_IO_REQUEST *)
+				cmd_fusion->io_request;
+		if (scsi_io_req->Function == MPI2_FUNCTION_SCSI_TASK_MGMT)
+			result = RETURN_CMD;
+
 		switch (result) {
 		case REFIRE_CMD:
 			megasas_fire_cmd_fusion(instance, req_desc);
@@ -4309,6 +4330,37 @@ void megasas_refire_mgmt_cmd(struct megasas_instance *instance)
 		case COMPLETE_CMD:
 			megasas_complete_cmd(instance, cmd_mfi, DID_OK);
 			break;
+		}
+	}
+}
+
+/*
+ * megasas_return_polled_cmds: Return polled mode commands back to the pool
+ *			       before initiating an OCR.
+ * @instance:                  Controller's soft instance
+ */
+static void
+megasas_return_polled_cmds(struct megasas_instance *instance)
+{
+	int i;
+	struct megasas_cmd_fusion *cmd_fusion;
+	struct fusion_context *fusion;
+	struct megasas_cmd *cmd_mfi;
+
+	fusion = instance->ctrl_context;
+
+	for (i = instance->max_scsi_cmds; i < instance->max_fw_cmds; i++) {
+		cmd_fusion = fusion->cmd_list[i];
+		cmd_mfi = instance->cmd_list[cmd_fusion->sync_cmd_idx];
+
+		if (cmd_mfi->flags & DRV_DCMD_POLLED_MODE) {
+			if (megasas_dbg_lvl & OCR_DEBUG)
+				dev_info(&instance->pdev->dev,
+					 "%s %d return cmd 0x%x opcode 0x%x\n",
+					 __func__, __LINE__, cmd_mfi->frame->hdr.cmd,
+					 le32_to_cpu(cmd_mfi->frame->dcmd.opcode));
+			cmd_mfi->flags &= ~DRV_DCMD_POLLED_MODE;
+			megasas_return_cmd(instance, cmd_mfi);
 		}
 	}
 }
@@ -4496,7 +4548,6 @@ megasas_issue_tm(struct megasas_instance *instance, u16 device_handle,
 	if (!timeleft) {
 		dev_err(&instance->pdev->dev,
 			"task mgmt type 0x%x timed out\n", type);
-		cmd_mfi->flags |= DRV_DCMD_SKIP_REFIRE;
 		mutex_unlock(&instance->reset_mutex);
 		rc = megasas_reset_fusion(instance->host, MFI_IO_TIMEOUT_OCR);
 		mutex_lock(&instance->reset_mutex);
@@ -4676,12 +4727,12 @@ int megasas_task_abort_fusion(struct scsi_cmnd *scmd)
 		"attempting task abort! scmd(0x%p) tm_dev_handle 0x%x\n",
 		scmd, devhandle);
 
-	mr_device_priv_data->tm_busy = 1;
+	mr_device_priv_data->tm_busy = true;
 	ret = megasas_issue_tm(instance, devhandle,
 			scmd->device->channel, scmd->device->id, smid,
 			MPI2_SCSITASKMGMT_TASKTYPE_ABORT_TASK,
 			mr_device_priv_data);
-	mr_device_priv_data->tm_busy = 0;
+	mr_device_priv_data->tm_busy = false;
 
 	mutex_unlock(&instance->reset_mutex);
 	scmd_printk(KERN_INFO, scmd, "task abort %s!! scmd(0x%p)\n",
@@ -4746,12 +4797,12 @@ int megasas_reset_target_fusion(struct scsi_cmnd *scmd)
 	sdev_printk(KERN_INFO, scmd->device,
 		"attempting target reset! scmd(0x%p) tm_dev_handle: 0x%x\n",
 		scmd, devhandle);
-	mr_device_priv_data->tm_busy = 1;
+	mr_device_priv_data->tm_busy = true;
 	ret = megasas_issue_tm(instance, devhandle,
 			scmd->device->channel, scmd->device->id, 0,
 			MPI2_SCSITASKMGMT_TASKTYPE_TARGET_RESET,
 			mr_device_priv_data);
-	mr_device_priv_data->tm_busy = 0;
+	mr_device_priv_data->tm_busy = false;
 	mutex_unlock(&instance->reset_mutex);
 	scmd_printk(KERN_NOTICE, scmd, "target reset %s!!\n",
 		(ret == SUCCESS) ? "SUCCESS" : "FAILED");
@@ -4761,7 +4812,8 @@ out:
 }
 
 /*SRIOV get other instance in cluster if any*/
-struct megasas_instance *megasas_get_peer_instance(struct megasas_instance *instance)
+static struct
+megasas_instance *megasas_get_peer_instance(struct megasas_instance *instance)
 {
 	int i;
 
@@ -4862,6 +4914,7 @@ int megasas_reset_fusion(struct Scsi_Host *shost, int reason)
 	if (instance->requestorId && !instance->skip_heartbeat_timer_del)
 		del_timer_sync(&instance->sriov_heartbeat_timer);
 	set_bit(MEGASAS_FUSION_IN_RESET, &instance->reset_flags);
+	set_bit(MEGASAS_FUSION_OCR_NOT_POSSIBLE, &instance->reset_flags);
 	atomic_set(&instance->adprecovery, MEGASAS_ADPRESET_SM_POLLING);
 	instance->instancet->disable_intr(instance);
 	megasas_sync_irqs((unsigned long)instance);
@@ -4966,7 +5019,9 @@ int megasas_reset_fusion(struct Scsi_Host *shost, int reason)
 				goto kill_hba;
 			}
 
-			megasas_refire_mgmt_cmd(instance);
+			megasas_refire_mgmt_cmd(instance,
+						(i == (MEGASAS_FUSION_MAX_RESET_TRIES - 1)
+							? 1 : 0));
 
 			/* Reset load balance info */
 			if (fusion->load_balance_info)
@@ -4974,8 +5029,16 @@ int megasas_reset_fusion(struct Scsi_Host *shost, int reason)
 				       (sizeof(struct LD_LOAD_BALANCE_INFO) *
 				       MAX_LOGICAL_DRIVES_EXT));
 
-			if (!megasas_get_map_info(instance))
+			if (!megasas_get_map_info(instance)) {
 				megasas_sync_map_info(instance);
+			} else {
+				/*
+				 * Return pending polled mode cmds before
+				 * retrying OCR
+				 */
+				megasas_return_polled_cmds(instance);
+				continue;
+			}
 
 			megasas_setup_jbod_map(instance);
 
@@ -5002,6 +5065,15 @@ int megasas_reset_fusion(struct Scsi_Host *shost, int reason)
 				megasas_set_dynamic_target_properties(sdev, is_target_prop);
 			}
 
+			status_reg = instance->instancet->read_fw_status_reg
+					(instance);
+			abs_state = status_reg & MFI_STATE_MASK;
+			if (abs_state != MFI_STATE_OPERATIONAL) {
+				dev_info(&instance->pdev->dev,
+					 "Adapter is not OPERATIONAL, state 0x%x for scsi:%d\n",
+					 abs_state, instance->host->host_no);
+				goto out;
+			}
 			atomic_set(&instance->adprecovery, MEGASAS_HBA_OPERATIONAL);
 
 			dev_info(&instance->pdev->dev,
@@ -5067,13 +5139,13 @@ kill_hba:
 	instance->skip_heartbeat_timer_del = 1;
 	retval = FAILED;
 out:
-	clear_bit(MEGASAS_FUSION_IN_RESET, &instance->reset_flags);
+	clear_bit(MEGASAS_FUSION_OCR_NOT_POSSIBLE, &instance->reset_flags);
 	mutex_unlock(&instance->reset_mutex);
 	return retval;
 }
 
 /* Fusion Crash dump collection */
-void  megasas_fusion_crash_dump(struct megasas_instance *instance)
+static void  megasas_fusion_crash_dump(struct megasas_instance *instance)
 {
 	u32 status_reg;
 	u8 partial_copy = 0;

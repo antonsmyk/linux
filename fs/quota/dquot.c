@@ -841,7 +841,7 @@ struct dquot *dqget(struct super_block *sb, struct kqid qid)
 	struct dquot *dquot = NULL, *empty = NULL;
 
 	if (!qid_has_mapping(sb->s_user_ns, qid))
-		return ERR_PTR(-EINVAL);
+		return NULL;
 
         if (!sb_has_quota_active(sb, qid.type))
 		return NULL;
@@ -953,6 +953,7 @@ static void add_dquot_ref(struct super_block *sb, int type)
 		 * later.
 		 */
 		old_inode = inode;
+		cond_resched();
 		spin_lock(&sb->s_inode_list_lock);
 	}
 	spin_unlock(&sb->s_inode_list_lock);

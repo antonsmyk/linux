@@ -532,7 +532,9 @@ xfsaild(
 {
 	struct xfs_ail	*ailp = data;
 	long		tout = 0;	/* milliseconds */
+	unsigned int	noreclaim_flag;
 
+	noreclaim_flag = current->flags & PF_MEMALLOC;
 	current->flags |= PF_MEMALLOC;
 	set_freezable();
 
@@ -588,6 +590,7 @@ xfsaild(
 		tout = xfsaild_push(ailp);
 	}
 
+	current->flags = (current->flags & ~PF_MEMALLOC) | noreclaim_flag;
 	return 0;
 }
 

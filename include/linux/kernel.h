@@ -460,6 +460,8 @@ extern int panic_on_oops;
 extern int panic_on_unrecovered_nmi;
 extern int panic_on_io_nmi;
 extern int panic_on_warn;
+extern unsigned long panic_on_taint;
+extern bool panic_on_taint_nousertaint;
 extern int sysctl_panic_on_rcu_stall;
 extern int sysctl_panic_on_stackoverflow;
 
@@ -538,6 +540,7 @@ extern enum system_states {
 #define TAINT_RESERVED30		30
 #define TAINT_RESERVED31		31
 #define TAINT_FLAGS_COUNT		32
+#define TAINT_FLAGS_MAX			((1UL << TAINT_FLAGS_COUNT) - 1)
 
 struct taint_flag {
 	char c_true;	/* character printed when tainted */
@@ -671,7 +674,7 @@ do {							\
 
 #define do_trace_printk(fmt, args...)					\
 do {									\
-	static const char *trace_printk_fmt				\
+	static const char *trace_printk_fmt __used			\
 		__attribute__((section("__trace_printk_fmt"))) =	\
 		__builtin_constant_p(fmt) ? fmt : NULL;			\
 									\
@@ -718,7 +721,7 @@ extern int __trace_puts(unsigned long ip, const char *str, int size);
  */
 
 #define trace_puts(str) ({						\
-	static const char *trace_printk_fmt				\
+	static const char *trace_printk_fmt __used			\
 		__attribute__((section("__trace_printk_fmt"))) =	\
 		__builtin_constant_p(str) ? str : NULL;			\
 									\
@@ -738,7 +741,7 @@ extern void trace_dump_stack(int skip);
 #define ftrace_vprintk(fmt, vargs)					\
 do {									\
 	if (__builtin_constant_p(fmt)) {				\
-		static const char *trace_printk_fmt			\
+		static const char *trace_printk_fmt __used		\
 		  __attribute__((section("__trace_printk_fmt"))) =	\
 			__builtin_constant_p(fmt) ? fmt : NULL;		\
 									\

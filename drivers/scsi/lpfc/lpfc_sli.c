@@ -2274,8 +2274,6 @@ lpfc_sli_hbqbuf_find(struct lpfc_hba *phba, uint32_t tag)
 	struct hbq_dmabuf *hbq_buf;
 	uint32_t hbqno;
 
-	lockdep_assert_held(&phba->hbalock);
-
 	hbqno = tag >> 16;
 	if (hbqno >= LPFC_MAX_HBQS)
 		return NULL;

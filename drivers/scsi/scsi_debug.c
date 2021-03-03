@@ -935,7 +935,7 @@ static int resp_inquiry(struct scsi_cmnd * scp, int target,
 	arr[4] = SDEBUG_LONG_INQ_SZ - 5;
 	arr[5] = scsi_debug_dif ? 1 : 0; /* PROTECT bit */
 	if (0 == scsi_debug_vpd_use_hostno)
-		arr[5] = 0x10; /* claim: implicit TGPS */
+		arr[5] |= 0x10; /* claim: implicit TPGS */
 	arr[6] = 0x10; /* claim: MultiP */
 	/* arr[6] |= 0x40; ... claim: EncServ (enclosure services) */
 	arr[7] = 0xa; /* claim: LINKED + CMDQUE */
@@ -3300,6 +3300,11 @@ static int __init scsi_debug_init(void)
 		return -EINVAL;
 	}
 
+	if (scsi_debug_num_tgts < 0) {
+		pr_err("num_tgts must be >= 0\n");
+		return -EINVAL;
+	}
+
 	if (scsi_debug_guard > 1) {
 		printk(KERN_ERR "scsi_debug_init: guard must be 0 or 1\n");
 		return -EINVAL;
@@ -3331,10 +3336,10 @@ static int __init scsi_debug_init(void)
 	/* play around with geometry, don't waste too much on track 0 */
 	sdebug_heads = 8;
 	sdebug_sectors_per = 32;
-	if (scsi_debug_dev_size_mb >= 16)
-		sdebug_heads = 32;
-	else if (scsi_debug_dev_size_mb >= 256)
+	if (scsi_debug_dev_size_mb >= 256)
 		sdebug_heads = 64;
+	else if (scsi_debug_dev_size_mb >= 16)
+		sdebug_heads = 32;
 	sdebug_cylinders_per = (unsigned long)sdebug_capacity /
 			       (sdebug_sectors_per * sdebug_heads);
 	if (sdebug_cylinders_per >= 1024) {
@@ -3454,10 +3459,8 @@ bus_unreg:
 dev_unreg:
 	root_device_unregister(pseudo_primary);
 free_vm:
-	if (map_storep)
-		vfree(map_storep);
-	if (dif_storep)
-		vfree(dif_storep);
+	vfree(map_storep);
+	vfree(dif_storep);
 	vfree(fake_storep);
 
 	return ret;
@@ -3474,9 +3477,8 @@ static void __exit scsi_debug_exit(void)
 	bus_unregister(&pseudo_lld_bus);
 	root_device_unregister(pseudo_primary);
 
-	if (dif_storep)
-		vfree(dif_storep);
-
+	vfree(map_storep);
+	vfree(dif_storep);
 	vfree(fake_storep);
 }
 
@@ -3963,7 +3965,7 @@ static int sdebug_driver_probe(struct device * dev)
 		sdebug_driver_template.use_clustering = ENABLE_CLUSTERING;
 	hpnt = scsi_host_alloc(&sdebug_driver_template, sizeof(sdbg_host));
 	if (NULL == hpnt) {
-		printk(KERN_ERR "%s: scsi_register failed\n", __func__);
+		pr_err("%s: scsi_host_alloc failed\n", __func__);
 		error = -ENODEV;
 		return error;
 	}
